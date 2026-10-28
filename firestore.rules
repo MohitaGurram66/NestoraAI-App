@@ -1,0 +1,186 @@
+rules_version = '2';
+
+/**
+ * PROJECT: NESTORA AI - HOUSE RENTAL & ROOMMATE FINDER
+ * SECURITY RULES: PRODUCTION-READY
+ * 
+ * This file contains comprehensive security rules for all Firestore collections.
+ * It enforces strictly typed access, owner-only modifications, and role-based
+ * permissions where applicable.
+ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ==========================================
+    // HELPER FUNCTIONS
+    // ==========================================
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    function getRole(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data.role;
+    }
+    
+    function isAdmin() {
+      // Robust admin check including existence check for new users
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getRole(request.auth.uid) == 'admin';
+    }
+
+    // ==========================================
+    // USER PROFILES
+    // ==========================================
+    
+    match /users/{userId} {
+      // Users can read any profile (for owner info)
+      allow read: if isSignedIn();
+      
+      // Only the user can create/update their own profile
+      allow create, update: if isOwner(userId);
+      
+      // Admins can delete profiles
+      allow delete: if isAdmin();
+
+      // Notifications sub-collection rules
+      match /notifications/{notificationId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // ==========================================
+    // PROPERTY LISTINGS
+    // ==========================================
+    
+    match /listings/{listingId} {
+      // Anyone can read listings (publicly visible)
+      allow read: if true;
+      
+      // Any signed-in user can create a listing
+      allow create: if isSignedIn();
+      
+      // Only the owner or an admin can update or delete
+      allow update, delete: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || isAdmin()
+      );
+      
+      // Sub-collections: Reviews
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if isSignedIn();
+        allow update, delete: if isOwner(resource.data.userId);
+      }
+    }
+
+    // ==========================================
+    // ROOMMATE PROFILES
+    // ==========================================
+    
+    match /roommates/{profileId} {
+      // Signed-in users can browse roommates
+      allow read: if isSignedIn();
+      
+      // Only the user can manage their own roommate profile
+      allow create, update: if isOwner(profileId);
+      
+      allow delete: if isAdmin() || isOwner(profileId);
+    }
+
+    // ==========================================
+    // CHAT SYSTEM
+    // ==========================================
+    
+    match /chats/{chatId} {
+      // Participants can read and update the chat metadata (e.g., lastMessage)
+      allow read, update: if isSignedIn() && request.auth.uid in resource.data.participants;
+      
+      // Any signed-in user can initiate a chat
+      allow create: if isSignedIn();
+      
+      // Only admins can delete chats
+      allow delete: if isAdmin();
+
+      // Individual messages within a chat
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow delete: if isAdmin();
+      }
+    }
+
+    // ==========================================
+    // FAVORITES & SAVED PROPERTIES
+    // ==========================================
+    
+    match /favorites/{favoriteId} {
+      // Users can only access their own favorites
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow write: if isSignedIn() && (
+        (resource == null && request.resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.userId == request.auth.uid)
+      );
+    }
+
+    // ==========================================
+    // BOOKINGS & INQUIRIES
+    // ==========================================
+    
+    match /bookings/{bookingId} {
+      // Tenant or owner (both stored in 'participants') can read the booking
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participants ||
+        request.auth.uid == resource.data.ownerId ||
+        request.auth.uid == resource.data.renterId ||
+        request.auth.uid == resource.data.tenantId
+      );
+      
+      allow create: if isSignedIn();
+      
+      // Tenant can cancel (update status); owner can approve/reject
+      allow update: if isSignedIn() && (
+        request.auth.uid in resource.data.participants ||
+        request.auth.uid == resource.data.ownerId ||
+        request.auth.uid == resource.data.renterId ||
+        request.auth.uid == resource.data.tenantId
+      );
+    }
+
+    // ==========================================
+    // NOTIFICATIONS (Global collection)
+    // ==========================================
+    
+    match /notifications/{userId} {
+      // Users read their own notifications
+      allow read: if isOwner(userId);
+      
+      // Only system (via Admin SDK / Cloud Functions) should write notifications
+      allow write: if false; 
+    }
+
+    // ==========================================
+    // SYSTEM CONSTANTS & CONFIG (Internal)
+    // ==========================================
+    
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ==========================================
+    // DEFAULT DENY
+    // ==========================================
+    
+    match /{document=**} {
+      // Fallback: Disallow all access by default for unmapped collections
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# Ignore large mobile/desktop build folders (NOT assets)
+android/
+ios/
+windows/
+linux/
+macos/
+.dart_tool/
+build/
+test/
+.git/
+# DO NOT ignore assets/ or images, they are needed for the Flutter build!
